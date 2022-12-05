@@ -1,4 +1,4 @@
-package gontify
+package gonotify
 
 import (
 	"fmt"
@@ -99,9 +99,7 @@ func (n *Notify) run() {
 func (n *Notify) Add() error {
 	select {
 	case <-n.done:
-		return fmt.Errorf("Notify has been Canceled")
-	case <-n.forceDone:
-		return fmt.Errorf("Notify has been Canceled")
+		return fmt.Errorf("Notify has been stopped already")
 	default:
 		n.readyCount.Add(1)
 
@@ -125,9 +123,9 @@ func (n *Notify) Ready() <-chan *struct{} {
 	return n.ready
 }
 
-// Close is the graceful shutdown mechanism for our notification process. This will allow all currently
+// Stop is the graceful shutdown mechanism for our notification process. This will allow all currently
 // enqued counters to be notfied by the Read() chan.
-func (n *Notify) Close() {
+func (n *Notify) Stop() {
 	n.doneOnce.Do(func() {
 		close(n.done)
 	})
@@ -137,6 +135,6 @@ func (n *Notify) Close() {
 func (n *Notify) ForceStop() {
 	n.forceDoneOnce.Do(func() {
 		close(n.forceDone)
-		close(n.done)
+		n.Stop()
 	})
 }

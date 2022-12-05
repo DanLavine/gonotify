@@ -19,10 +19,15 @@ This could be some sort of generic queue where you want to gurantee message orde
 Producers and Consumers at once. We don't know if there will be more write making this grow very large. Or more
 Reads, ensuring this stays small.
 
-On a Write to the `genericBuffer` we simply want to add the entire body:
+On a Write to the `genericBuffer` we simply want to add the entire body and trigger there is a read ready:
 ```
 ... // do some proper logic to lock things
 genericBuffer = append(genericBuffer, []byte(...))
+
+go func() {
+  // trigger a client that there is data to read
+  readReady <- chan struct{}
+}()
 ```
 
 Then on each Read, we want to consume the first index of the buffer:
@@ -33,14 +38,7 @@ dataToReturn := genericBuffer[0]
 return dataToReturn
 ```
 
-If each write, we did something to trigger that there is data to read like:
-```
-go func() {
-  // trigger a client that there is data to read
-  readReady <- chan struct{}
-}()
-```
-We could have a lot of goroutines to know that there is data to be read. Which is kind of a pain
+This could have a lot of goroutines to know that there is data to be read. Which is kind of a pain
 to debug if things crash and print all stack traces. Its also hard to ensure that all those routines
 are properly drained on a shutdown which is annoying
 
