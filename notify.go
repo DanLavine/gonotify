@@ -16,8 +16,8 @@ type Notify struct {
 	done     chan struct{}
 
 	// counter to know how many items are waiting
-	readyCount   *atomic.Int32
-	readyTrigger chan struct{}
+	readyCount       *atomic.Int32
+	haveReadyTrigger chan struct{}
 
 	// Can be used to signal that there is a new item to read
 	ready chan *struct{}
@@ -34,7 +34,7 @@ func New() *Notify {
 		readyCount: new(atomic.Int32),
 
 		// a buffer of 1 should allow all Add() funcs to not block
-		readyTrigger: make(chan struct{}, 1),
+		haveReadyTrigger: make(chan struct{}, 1),
 
 		// Notifies a caller that something should be ready to read
 		ready: make(chan *struct{}),
@@ -45,6 +45,53 @@ func New() *Notify {
 	return notify
 }
 
+// loop to trigger the Ready() <-chan *struct. When there is data for processing
+//
+// 1. haveReadyTrigger
+//  1. will run on Add() if there as nothing currently waiting to be processed
+//  2. will re-queue another run if Add() was called multple times
+//
+// 2. done
+//  1. will wait for any previous calls to Add() to finish processing
+//  2. on a forceDone, will immediately exit
+func (n *Notify) run() {
+	for {
+		select {
+		case <-n.haveReadyTrigger:
+			select {
+			case <-n.forceDone:
+				// close everything and return
+				close(n.haveReadyTrigger)
+				close(n.ready)
+				return
+			default:
+				n.haveReady()
+			}
+		case <-n.done:
+			select {
+			case <-n.forceDone:
+				// close everything and return
+				close(n.haveReadyTrigger)
+				close(n.ready)
+				return
+			default:
+				// Ensure all messages have been drained
+				if n.readyCount.Load() == 0 {
+					n.ForceStop() // trigger a close on the force chan just to be safe
+					close(n.haveReadyTrigger)
+					close(n.ready)
+					return
+				}
+
+				// message to drain
+				n.haveReady()
+			}
+		}
+	}
+}
+
+// Informs the Ready() <-chan *struct that data is ready for processing. Also re-queues itself
+// if Add() was called multiple times and we have not fully drained all the messags for processing
 func (n *Notify) haveReady() {
 	currentCount := n.readyCount.Add(-1)
 
@@ -52,7 +99,7 @@ func (n *Notify) haveReady() {
 	// Otherwise the next time Add() is called, will trigger this loop from the 'run()' <-readTrigger again
 	if currentCount > 0 {
 		select {
-		case n.readyTrigger <- struct{}{}:
+		case n.haveReadyTrigger <- struct{}{}:
 			// enqueu another 'run()' loop
 		default:
 			// something is already in the queue, so we will hit this again on the next 'run()' trigger
@@ -67,34 +114,6 @@ func (n *Notify) haveReady() {
 	}
 }
 
-func (n *Notify) run() {
-	for {
-		select {
-		case <-n.done:
-			select {
-			case <-n.forceDone:
-				// close everything and return
-				close(n.readyTrigger)
-				close(n.ready)
-				return
-			default:
-				// Ensure all messages have been drained
-				if n.readyCount.Load() == 0 {
-					n.ForceStop() // trigger a close on the force chan just to be safe
-					close(n.readyTrigger)
-					close(n.ready)
-					return
-				}
-
-				// message to drain
-				n.haveReady()
-			}
-		case <-n.readyTrigger:
-			n.haveReady()
-		}
-	}
-}
-
 // Add a counter to notify and trigger a ready call
 func (n *Notify) Add() error {
 	select {
@@ -104,7 +123,7 @@ func (n *Notify) Add() error {
 		n.readyCount.Add(1)
 
 		select {
-		case n.readyTrigger <- struct{}{}:
+		case n.haveReadyTrigger <- struct{}{}:
 			// trigger that there is a item that is ready
 		default:
 			// in this case, we already know something is ready and fall through.
