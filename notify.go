@@ -135,6 +135,16 @@ func (n *Notify) Add() error {
 	}
 }
 
+func (n *Notify) Remove() {
+	select {
+	case <-n.ready:
+		// attempt a ready to pop an item off the queue
+		// this will call n.readyCount.Add(-1) in a thread safe way
+	default:
+		// nothing to do here
+	}
+}
+
 // Used to know if there is a message ready. If this is "nil", then all messages have been
 // drained and the Notifyer has been closed. No more messages should be sent on the shared data
 // structure this is protecting

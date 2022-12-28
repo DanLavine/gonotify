@@ -33,6 +33,35 @@ func TestAdd(t *testing.T) {
 	})
 }
 
+func TestRemove(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	t.Run("it performs a no-op if the notifier is empty", func(t *testing.T) {
+		notify := gonotify.New()
+
+		ready := notify.Ready()
+		g.Consistently(ready).ShouldNot(Receive())
+
+		notify.Remove()
+
+		g.Eventually(ready).ShouldNot(Receive())
+		notify.Stop()
+	})
+
+	t.Run("it removes a ready counter", func(t *testing.T) {
+		notify := gonotify.New()
+
+		ready := notify.Ready()
+		g.Consistently(ready).ShouldNot(Receive())
+
+		g.Expect(notify.Add()).ToNot(HaveOccurred())
+		notify.Remove()
+
+		g.Eventually(ready).ShouldNot(Receive())
+		notify.Stop()
+	})
+}
+
 func TestReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 
