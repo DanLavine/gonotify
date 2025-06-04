@@ -6,8 +6,12 @@ import (
 	"sync/atomic"
 )
 
+// Notify struct with all state tracking private
 type Notify struct {
-	// if Noify has been canceled
+	// rw lock to synchnozie stop operations
+	stopRWlock *sync.RWMutex
+
+	// if Noify has been force stopped
 	forceDoneOnce *sync.Once
 	forceDone     chan struct{}
 
@@ -23,8 +27,16 @@ type Notify struct {
 	ready chan *struct{}
 }
 
+//	RETURNS:
+//	* *Notify - Thread safe instance of notify with all private values assigned
+//
+// New() initalizes a new thread safy notify instance to be shared between any number
+// of gorutines. It is important to ensure either Stop() or ForceStop() to ensure all
+// operations are processed or properly dropped.
 func New() *Notify {
 	notify := &Notify{
+		stopRWlock: new(sync.RWMutex),
+
 		forceDoneOnce: new(sync.Once),
 		forceDone:     make(chan struct{}),
 
@@ -57,16 +69,8 @@ func New() *Notify {
 func (n *Notify) run() {
 	for {
 		select {
-		case <-n.haveReadyTrigger:
-			select {
-			case <-n.forceDone:
-				// close everything and return
-				close(n.haveReadyTrigger)
-				close(n.ready)
-				return
-			default:
-				n.haveReady()
-			}
+		// have an up front check every time to know if we have been signaled to cancel.
+		// without this check, a similar scoped done/haveReadyTrigger are random to trigger
 		case <-n.done:
 			select {
 			case <-n.forceDone:
@@ -85,6 +89,41 @@ func (n *Notify) run() {
 
 				// message to drain
 				n.haveReady()
+			}
+		// process normal loop
+		default:
+			select {
+			// blocking operation until something triggers the notifier
+			case <-n.haveReadyTrigger:
+				select {
+				case <-n.forceDone:
+					// close everything and return
+					close(n.haveReadyTrigger)
+					close(n.ready)
+					return
+				default:
+					n.haveReady()
+				}
+			// safeguard operation to ensure that we can recieve cancel signals
+			case <-n.done:
+				select {
+				case <-n.forceDone:
+					// close everything and return
+					close(n.haveReadyTrigger)
+					close(n.ready)
+					return
+				default:
+					// Ensure all messages have been drained
+					if n.readyCount.Load() == 0 {
+						n.ForceStop() // trigger a close on the force chan just to be safe
+						close(n.haveReadyTrigger)
+						close(n.ready)
+						return
+					}
+
+					// message to drain
+					n.haveReady()
+				}
 			}
 		}
 	}
@@ -116,6 +155,10 @@ func (n *Notify) haveReady() {
 
 // Add a counter to notify and trigger a ready call
 func (n *Notify) Add() error {
+	// can use the read lock here as only the force stop operation needs write protection
+	n.stopRWlock.RLock()
+	defer n.stopRWlock.RUnlock()
+
 	select {
 	case <-n.done:
 		return fmt.Errorf("Notify has been stopped already")
@@ -138,8 +181,8 @@ func (n *Notify) Add() error {
 func (n *Notify) Remove() {
 	select {
 	case <-n.ready:
-		// attempt a ready to pop an item off the queue
-		// this will call n.readyCount.Add(-1) in a thread safe way
+		// attempt a to pop an item off the queue.
+		// This will call n.readyCount.Add(-1) in a thread safe way
 	default:
 		// nothing to do here
 	}
@@ -163,6 +206,9 @@ func (n *Notify) Stop() {
 // ForceStop is the destructive shutdown that does not allow for Ready() to be fully drained.
 func (n *Notify) ForceStop() {
 	n.forceDoneOnce.Do(func() {
+		n.stopRWlock.Lock()
+		defer n.stopRWlock.Unlock()
+
 		close(n.forceDone)
 		n.Stop()
 	})

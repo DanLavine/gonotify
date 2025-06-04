@@ -1,6 +1,7 @@
 package gonotify_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/DanLavine/gonotify"
@@ -80,7 +81,6 @@ func TestReady(t *testing.T) {
 
 	t.Run("ready chan receives for each call of Add", func(t *testing.T) {
 		notify := gonotify.New()
-
 		ready := notify.Ready()
 
 		// add a counter
@@ -98,7 +98,6 @@ func TestReady(t *testing.T) {
 
 	t.Run("ready chan drains for each call of Add on a Stop", func(t *testing.T) {
 		notify := gonotify.New()
-
 		ready := notify.Ready()
 
 		// add a counter
@@ -117,7 +116,6 @@ func TestReady(t *testing.T) {
 
 	t.Run("ready chan returns nil on a ForceStop", func(t *testing.T) {
 		notify := gonotify.New()
-
 		ready := notify.Ready()
 
 		// add a counter
@@ -129,5 +127,116 @@ func TestReady(t *testing.T) {
 		notify.ForceStop()
 
 		g.Eventually(ready).ShouldNot(Receive())
+	})
+
+	t.Run("it runs all common commands asynchrnously", func(t *testing.T) {
+		notify := gonotify.New()
+		ready := notify.Ready()
+
+		// set 100 notifications
+		addErrChan := make(chan error)
+		for i := 0; i < 100; i++ {
+			go func() {
+				addErrChan <- notify.Add()
+			}()
+		}
+
+		// accept up to 100 notifications
+		go func() {
+			for i := 0; i < 75; i++ {
+				go func() {
+					<-ready
+				}()
+			}
+		}()
+
+		// drop up to 25 notifications
+		go func() {
+			for i := 0; i < 25; i++ {
+				go func() {
+					notify.Remove()
+				}()
+			}
+		}()
+
+		for i := 0; i < 100; i++ {
+			g.Eventually(addErrChan).Should(Receive(BeNil()))
+		}
+	})
+
+	t.Run("it can properly drains all operations asynchronously", func(t *testing.T) {
+		notify := gonotify.New()
+		ready := notify.Ready()
+
+		// set 100 notifications
+		addErrChan := make(chan error)
+		for i := 0; i < 100; i++ {
+			go func() {
+				addErrChan <- notify.Add()
+			}()
+		}
+
+		// accept up to 100 notifications
+		go func() {
+			for i := 0; i < 75; i++ {
+				go func() {
+					<-ready
+				}()
+			}
+		}()
+
+		// drop up to 25 notifications
+		go func() {
+			for i := 0; i < 25; i++ {
+				go func() {
+					notify.Remove()
+				}()
+			}
+		}()
+
+		notify.Stop()
+		for i := 0; i < 100; i++ {
+			g.Eventually(addErrChan).Should(Receive(Or(BeNil(), Equal(fmt.Errorf("Notify has been stopped already")))))
+		}
+
+		g.Eventually(ready).Should(BeClosed())
+	})
+
+	t.Run("it can immediately stops all operations asynchronously", func(t *testing.T) {
+		notify := gonotify.New()
+		ready := notify.Ready()
+
+		// set 100 notifications
+		addErrChan := make(chan error)
+		for i := 0; i < 100; i++ {
+			go func() {
+				addErrChan <- notify.Add()
+			}()
+		}
+
+		// accept up to 100 notifications
+		go func() {
+			for i := 0; i < 75; i++ {
+				go func() {
+					<-ready
+				}()
+			}
+		}()
+
+		// drop up to 25 notifications
+		go func() {
+			for i := 0; i < 25; i++ {
+				go func() {
+					notify.Remove()
+				}()
+			}
+		}()
+
+		notify.ForceStop()
+		for i := 0; i < 100; i++ {
+			g.Eventually(addErrChan).Should(Receive(Or(BeNil(), Equal(fmt.Errorf("Notify has been stopped already")))))
+		}
+
+		g.Eventually(ready).Should(BeClosed())
 	})
 }
